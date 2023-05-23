@@ -20,6 +20,7 @@ jobs:
           sudo apt-get install ninja-build
           sudo apt-get install -yq g++-multilib libfreetype6-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxext-dev pkg-config wine-stable wine64-tools
           sudo apt-get install -yq binutils-mingw-w64-i686 binutils-mingw-w64-x86-64 g++-mingw-w64-i686 g++-mingw-w64-x86-64 mingw-w64
+          sudo apt-get install -yq i386-w64-mingw32-pkg-config
 
       - name: Build.
         run: |
@@ -33,5 +34,5 @@ jobs:
           patch -p0 -i ../00-qemu720-mesa-glide.patch
           bash ../scripts/sign_commit
           rm -rfv ../build && mkdir ../build && cd ../build
-          ../qemu-7.2.0/configure --target-list=i386-softmmu --cross-prefix=x86_64-w64-mingw32- && make -j
+          ../qemu-7.2.0/configure --target-list=i386-softmmu --cross-prefix=i386-w64-mingw32- && make -j
           # bash ./after-build-cleanup.sh
