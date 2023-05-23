@@ -16,6 +16,7 @@ jobs:
       - name: First set up.
         run: |
           iwr --no-check-certificate https://download.qemu.org/qemu-7.2.0.tar.xz
+          choco install ninja
 
       - name: Build.
         shell: bash
