@@ -15,6 +15,10 @@ jobs:
 
       - name: First set up.
         run: |
+          sudo apt install ninja
+
+      - name: Build.
+        run: |
           # bash ./clean.sh
           wget --no-check-certificate https://download.qemu.org/qemu-7.2.0.tar.xz
           tar xfv qemu-7.2.0.tar.xz
