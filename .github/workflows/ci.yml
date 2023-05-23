@@ -20,6 +20,7 @@ jobs:
           sudo apt-get install ninja-build
           sudo apt-get install -yq g++-multilib libfreetype6-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxext-dev pkg-config wine-stable wine64-tools
           sudo apt-get install -yq binutils-mingw-w64-i686 binutils-mingw-w64-x86-64 g++-mingw-w64-i686 g++-mingw-w64-x86-64 mingw-w64
+          sudo ln -s /usr/bin/pkg-config /usr/bin/i686-w64-mingw32-pkg-config
 
       - name: Build.
         run: |
