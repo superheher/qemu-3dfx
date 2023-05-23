@@ -4,7 +4,7 @@ on: [push]
 jobs:
 
   linux:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - name: Clone.
         uses: actions/checkout@v3.1.0
@@ -15,11 +15,13 @@ jobs:
 
       - name: First set up.
         run: |
-          sudo apt-get update && sudo apt-get install ninja-build
+          echo "Test."
 
       - name: Build.
+        shell: bash
         run: |
           # bash ./clean.sh
+          sudo apt-get update && sudo apt-get install ninja-build
           wget --no-check-certificate https://download.qemu.org/qemu-7.2.0.tar.xz
           tar xfv qemu-7.2.0.tar.xz
           rm -rfv qemu-7.2.0.tar.xz
