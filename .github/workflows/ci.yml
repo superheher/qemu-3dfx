@@ -22,7 +22,7 @@ jobs:
         shell: bash
         run: |
           # bash ./clean.sh
-          tar xfv qemu-7.2.0.tar.xz
+          tar xf qemu-7.2.0.tar.xz
           rm -rfv qemu-7.2.0.tar.xz
           cd qemu-7.2.0
           rsync -r ../qemu-0/hw/3dfx ./hw/
