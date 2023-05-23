@@ -16,7 +16,8 @@ jobs:
       - name: First set up.
         run: |
           iwr -OutFile qemu-7.2.0.tar.xz https://download.qemu.org/qemu-7.2.0.tar.xz
-          tar -xf qemu-7.2.0.tar.xz
+          7z x qemu-7.2.0.tar.xz
+          7z x qemu-7.2.0.tar
           choco install ninja
 
       - name: Build.
