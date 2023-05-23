@@ -15,7 +15,7 @@ jobs:
 
       - name: First set up.
         run: |
-          sudo apt install ninja
+          sudo apt-get update && sudo apt-get install ninja
 
       - name: Build.
         run: |
