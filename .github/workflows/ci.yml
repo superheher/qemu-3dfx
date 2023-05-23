@@ -15,14 +15,12 @@ jobs:
 
       - name: First set up.
         run: |
-          echo "Test."
+          iwr --no-check-certificate https://download.qemu.org/qemu-7.2.0.tar.xz
 
       - name: Build.
         shell: bash
         run: |
           # bash ./clean.sh
-          sudo apt-get update && sudo apt-get install ninja-build
-          wget --no-check-certificate https://download.qemu.org/qemu-7.2.0.tar.xz
           tar xfv qemu-7.2.0.tar.xz
           rm -rfv qemu-7.2.0.tar.xz
           cd qemu-7.2.0
