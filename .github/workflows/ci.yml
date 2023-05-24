@@ -35,5 +35,5 @@ jobs:
           patch -p0 -i ../00-qemu720-mesa-glide.patch
           bash ../scripts/sign_commit
           rm -rfv ../build && mkdir ../build && cd ../build
-          ../qemu-7.2.0/configure --target-list=i386-softmmu --cross-prefix=x86_64-w64-mingw32- && make -j
+          ../qemu-7.2.0/configure --target-list=i386-softmmu --cross-prefix=i686-w64-mingw32- && make -j
           # bash ./after-build-cleanup.sh
