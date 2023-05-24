@@ -20,7 +20,7 @@ jobs:
           sudo apt-get install ninja-build libglib2.0-dev libibumad-dev libibverbs-dev libpixman-1-dev
           sudo apt-get install -yq g++-multilib libfreetype6-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxext-dev pkg-config wine-stable wine64-tools
           sudo apt-get install -yq binutils-mingw-w64-i686 binutils-mingw-w64-x86-64 g++-mingw-w64-i686 g++-mingw-w64-x86-64 mingw-w64
-          sudo apt-get install -yq gcc libc6-dev ninja-build bison flex gettext python3-sphinx g++-mingw-w64-x86-64 gcc-mingw-w64-x86-64 mingw-w64-tools mingw64-x86-64-adwaita-icon-theme mingw64-x86-64-cogl mingw64-x86-64-curl mingw64-x86-64-gmp mingw64-x86-64-gnutls mingw64-x86-64-gtk3 mingw64-x86-64-icu mingw64-x86-64-libxml2 mingw64-x86-64-ncurses mingw64-x86-64-sdl2 mingw64-x86-64-usbredir mingw64-x86-64-openssl
+          sudo apt-get install -yq gcc libc6-dev ninja-build bison flex gettext python3-sphinx g++-mingw-w64-x86-64 gcc-mingw-w64-x86-64 mingw-w64-tools
           sudo apt-get install -yq mingw-w64-tools
 
       - name: Build.
