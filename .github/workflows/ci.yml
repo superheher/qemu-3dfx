@@ -33,7 +33,6 @@ jobs:
             mingw-w64-i686-python
             mingw-w64-i686-python-pip
             mingw-w64-i686-python-setuptools
-            mingw-w64-i686-python-distlib
             mingw-w64-i686-python-sphinx
             bison
             flex
@@ -55,7 +54,7 @@ jobs:
       - name: Build QEMU
         run: |
           mkdir build && cd build
-          ../qemu-9.2.2/configure --target-list=i386-softmmu && make -j$(($(nproc)))
+          ../qemu-9.2.2/configure --target-list=i386-softmmu --enable-download && make -j$(($(nproc)))
 
       - name: Build guest wrappers (3dfx)
         run: |
