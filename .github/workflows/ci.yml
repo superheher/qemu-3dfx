@@ -59,7 +59,7 @@ jobs:
       - name: Build QEMU
         run: |
           mkdir build && cd build
-          ../qemu-9.2.2/configure --target-list=i386-softmmu && make -j$(($(nproc)))
+          ../qemu-9.2.2/configure --target-list=i386-softmmu --disable-guest-agent-msi --disable-guest-agent && make -j$(($(nproc)))
 
       - name: Build guest wrappers (3dfx)
         run: |
