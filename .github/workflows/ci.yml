@@ -41,7 +41,7 @@ jobs:
 
       - name: Install Python distlib
         run: |
-          pip3 install distlib
+          python3 -m pip install distlib
 
       - name: Download and patch QEMU 9.2.2
         run: |
