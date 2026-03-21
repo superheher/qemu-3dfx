@@ -30,6 +30,7 @@ jobs:
             mingw-w64-i686-SDL2
             mingw-w64-i686-ninja
             mingw-w64-i686-python
+            mingw-w64-i686-python-setuptools
             mingw-w64-i686-python-sphinx
             bison
             flex
@@ -37,6 +38,10 @@ jobs:
 
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Install Python distlib
+        run: |
+          pip3 install distlib
 
       - name: Download and patch QEMU 9.2.2
         run: |
