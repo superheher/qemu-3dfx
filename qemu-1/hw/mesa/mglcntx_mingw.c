@@ -30,14 +30,20 @@
     if (cond) { fprintf(stderr, "glcntx: " fmt "\n" , ## __VA_ARGS__); }
 
 
-#if defined(CONFIG_WIN32) && CONFIG_WIN32
-#include <GL/gl.h>
-#include <GL/wglext.h>
-#include "sysemu/whpx.h"
+#if defined(CONFIG_WIN32)
+#include <GL/wgl.h>
+#include "system/whpx.h"
 
-int MGLUpdateGuestBufo(mapbufo_t *bufo, int add)
+static int bufo_accel_en(void)
 {
-    int ret = GetBufOAccelEN()? whpx_enabled():0;
+    return 1;
+}
+int MGLUpdateGuestBufo(mapbufo_t *bufo, const int add)
+{
+    int ret = (GetBufOAccelEN()
+            || (bufo_accel_en() &&
+                (bufo && bufo->tgt == GL_PIXEL_UNPACK_BUFFER))
+            )? whpx_enabled():0;
 
     if (ret && bufo) {
         bufo->lvl = (add)? MapBufObjGpa(bufo):0;
@@ -158,7 +164,7 @@ static struct {
     int (WINAPI *GetSwapIntervalEXT)(void);
 } wglFuncs;
 
-int glwnd_ready(void) { return wnd_ready; }
+int glwnd_ready(void) { return qatomic_read(&wnd_ready); }
 
 int MGLExtIsAvail(const char *xstr, const char *str)
 { return find_xstr(xstr, str); }
@@ -184,8 +190,8 @@ static void cwnd_mesagl(void *swnd, void *nwnd, void *opaque)
     ReleaseDC(hwnd, hDC);
     hwnd = (HWND)nwnd;
     hDC = GetDC(hwnd);
-    wnd_ready = 1;
     DPRINTF("MESAGL window [native %p] ready", nwnd);
+    qatomic_set(&wnd_ready, 1);
 }
 
 static void TmpContextPurge(void)
@@ -263,10 +269,9 @@ void MGLTmpContext(void)
 #define GLWINDOW_INIT() \
     if (hDC == 0) { if (0) \
     CreateMesaWindow("MesaGL", 640, 480, 1); \
-    wnd_ready = 0; \
+    qatomic_set(&wnd_ready, 0); \
     ImplMesaGLReset(); \
-    DPRINTF_COND(GetGLScaleWidth(), "MESAGL window scaled at width %d", GetGLScaleWidth()); \
-    mesa_prepare_window(GetContextMSAA(), GLon12, GetGLScaleWidth(), &cwnd_mesagl); hDC = GetDC(hwnd); }
+    mesa_prepare_window(GetContextMSAA(), GLon12, 0, &cwnd_mesagl); hDC = GetDC(hwnd); }
 
 #define GLWINDOW_FINI() \
     if (0) { } \
@@ -276,27 +281,35 @@ void MGLDeleteContext(int level)
 {
     int n = (level)? ((level % MAX_LVLCNTX)? (level % MAX_LVLCNTX):1):level;
     wglFuncs.MakeCurrent(NULL, NULL);
-    if (n == 0) {
+    if (n) {
+        wglFuncs.DeleteContext(hRC[n]);
+        hRC[n] = 0;
+    }
+    else {
         for (int i = MAX_LVLCNTX; i > 1;) {
             if (hRC[--i]) {
                 wglFuncs.DeleteContext(hRC[i]);
                 hRC[i] = 0;
             }
         }
-    }
-    wglFuncs.DeleteContext(hRC[n]);
-    hRC[n] = 0;
-    if (!n)
+        MesaBlitFree();
         MGLActivateHandler(0, 0);
+    }
 }
 
 void MGLWndRelease(void)
 {
     if (hwnd) {
+        if (hRC[0]) {
+            wglFuncs.MakeCurrent(NULL, NULL);
+            wglFuncs.DeleteContext(hRC[0]);
+        }
         MesaInitGammaRamp();
         ReleaseDC(hwnd, hDC);
         TmpContextPurge();
         GLWINDOW_FINI();
+        CompareAttribArray(NULL);
+        hRC[0] = 0;
         hDC = 0;
         hwnd = 0;
     }
@@ -312,13 +325,14 @@ int MGLCreateContext(uint32_t gDC)
     }
     else {
         wglFuncs.MakeCurrent(NULL, NULL);
-        for (i = MAX_LVLCNTX; i > 0;) {
+        for (i = MAX_LVLCNTX; i > 1;) {
             if (hRC[--i]) {
                 wglFuncs.DeleteContext(hRC[i]);
                 hRC[i] = 0;
             }
         }
-        hRC[0] = wglFuncs.CreateContext(hDC);
+        if (!hRC[0])
+            hRC[0] = wglFuncs.CreateContext(hDC);
         ret = (hRC[0])? 0:1;
     }
     return ret;
@@ -349,6 +363,7 @@ int MGLMakeCurrent(uint32_t cntxRC, int level)
 int MGLSwapBuffers(void)
 {
     MGLActivateHandler(1, 0);
+    MesaBlitScale();
     return SwapBuffers(hDC);
 }
 
@@ -409,11 +424,11 @@ int MGLSetPixelFormat(int fmt, const void *p)
     if (curr == 0) {
         curr = MGLPresetPixelFormat();
         ret = SetPixelFormat(hDC, curr, (ppfd->nSize)? ppfd:0);
+        DPRINTF("  *WARN* UNLIKELY() SetPixelFormat, %d %d", curr, ret);
     }
-    else {
+    else
         ret = 1;
-        TmpContextPurge();
-    }
+    TmpContextPurge();
 
     if (wglFuncs.GetPixelFormatAttribivARB) {
         static const int iattr[] = {
@@ -566,14 +581,16 @@ void MGLFuncHandler(const char *name)
             argsp[1] = (argsp[0])? i:0;
             if (argsp[1] == 0) {
                 wglFuncs.MakeCurrent(NULL, NULL);
-                for (i = MAX_LVLCNTX; i > 0;) {
-                    if (hRC[--i]) {
-                        wglFuncs.DeleteContext(hRC[i]);
-                        hRC[i] = 0;
+                if (CompareAttribArray((const int *)&argsp[2])) {
+                    for (i = MAX_LVLCNTX; i > 0;) {
+                        if (hRC[--i]) {
+                            wglFuncs.DeleteContext(hRC[i]);
+                            hRC[i] = 0;
+                        }
                     }
+                    MGLActivateHandler(0, 0);
+                    hRC[0] = wglFuncs.CreateContextAttribsARB(hDC, 0, (const int *)&argsp[2]);
                 }
-                MGLActivateHandler(0, 0);
-                hRC[0] = wglFuncs.CreateContextAttribsARB(hDC, 0, (const int *)&argsp[2]);
                 ret = (hRC[0])? 1:0;
             }
             else {
@@ -678,7 +695,7 @@ void MGLFuncHandler(const char *name)
                 return;
             }
             hPbuffer[i] = fp(hDC, argsp[0], argsp[1], argsp[2], (const int *)&argsp[4]);
-            hPBDC[i] = fpDC(hPbuffer[i]);
+            hPBDC[i] = (hPbuffer[i])? fpDC(hPbuffer[i]):0;
             argsp[0] = (hPbuffer[i] && hPBDC[i])? 1:0;
             argsp[1] = i;
             return;
@@ -733,71 +750,40 @@ void MGLFuncHandler(const char *name)
 
 #endif //CONFIG_WIN32
 
+int CompareAttribArray(const int *attrib)
+{
+    static struct {
+        int *array;
+        int len;
+    } s;
+
+    int i;
+    if (!attrib) {
+        s.len = 0;
+        return 0;
+    }
+    for (i = 0; attrib[i]; i+=2);
+    if (i && (s.len == (i * sizeof(int))) && !memcmp(s.array, attrib, s.len))
+        return 0;
+    s.len = i * sizeof(int);
+    s.array = g_realloc(s.array, s.len);
+    memcpy(s.array, attrib, s.len);
+    return 1;
+}
+
 void MGLActivateHandler(const int i, const int d)
 {
     static int last;
 
     if (i != last) {
         last = i;
-        DPRINTF_COND(GLFuncTrace(), "wm_activate %-32d", i);
+        DPRINTF_COND(GLFuncTrace(), "wm_activate %s%-32d", (d)? "dfr ":"imm ", i);
         if (i) {
             deactivateGuiRefSched();
             mesa_renderer_stat(i);
         }
         else
             deactivateSched(d);
-    }
-}
-
-void MGLScaleHandler(const uint32_t FEnum, void *args)
-{
-    static int scissor_last[4], viewport_last[4];
-    int v[4], fullscreen, aspect, blit_adj = 0;
-    uint32_t *box;
-
-    if (!args) {
-        memset(scissor_last, 0, sizeof(v));
-        memset(viewport_last, 0, sizeof(v));
-        return;
-    }
-    fullscreen = mesa_gui_fullscreen(v);
-    aspect = (v[1] & (1 << 15))? 0:1;
-
-    switch(FEnum) {
-        case FEnum_glBlitFramebuffer:
-        case FEnum_glBlitFramebufferEXT:
-            box = &((uint32_t *)args)[4];
-            blit_adj = 1;
-            break;
-        case FEnum_glScissor:
-        case FEnum_glViewport:
-            memcpy((FEnum == FEnum_glScissor)? scissor_last:viewport_last,
-                    args, sizeof(v));
-            box = args;
-            break;
-        default:
-            if (fullscreen) {
-                if ((FEnum == GL_SCISSOR_BOX) && scissor_last[3])
-                    memcpy(args, scissor_last, sizeof(v));
-                if ((FEnum == GL_VIEWPORT) && viewport_last[3])
-                    memcpy(args, viewport_last, sizeof(v));
-            }
-            return;
-    }
-    if (fullscreen && !wrCurrBinding(GL_FRAMEBUFFER_BINDING) &&
-        DrawableContext()) {
-        int offs_x = v[2] - ((1.f * v[0] * v[3]) / (v[1] & 0x7FFFU));
-        offs_x >>= 1;
-        for (int i = 0; i < 4; i++)
-            box[i] *= (1.f * v[3]) / (v[1] & 0x7FFFU);
-        if (aspect) {
-            box[0] += offs_x;
-            box[2] += (blit_adj)? box[0]:0;
-        }
-        else {
-            box[0] *= (1.f * v[2]) / box[2];
-            box[2] = v[2];
-        }
     }
 }
 
@@ -822,6 +808,8 @@ void MGLMouseWarp(const uint32_t ci)
 static QEMUTimer *ts;
 static void deactivateOnce(void)
 {
+    if (!GetContextZERO())
+        CompareAttribArray(NULL);
     MGLMouseWarp(0);
     mesa_renderer_stat(0);
 }
@@ -851,7 +839,7 @@ void deactivateSched(const int deferred)
 static void deactivateGuiRefOneshot(void *opaque)
 {
     deactivateCancel();
-    graphic_hw_halt(0x81U);
+    graphic_hw_passthrough(qemu_console_lookup_by_index(0), 1);
 }
 void deactivateGuiRefSched(void)
 {
@@ -934,7 +922,7 @@ static void profile_stat(void)
     p->ftime += (curr - p->last) * (1.0f /  NANOSECONDS_PER_SECOND);
     p->last = curr;
 
-    i = (GLFifoTrace() || GLFuncTrace() || GLShaderDump())? 0:((int) p->ftime);
+    i = (GLFifoTrace() || GLFuncTrace() || GLShaderDump() || GLCheckError())? 0:((int) p->ftime);
     if (i && ((i % 5) == 0))
 	profile_dump();
 }

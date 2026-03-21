@@ -21,5 +21,11 @@ typedef struct fxCompatTbl {
     struct E_PATCH *ptr;
 } COMPATFX, * PCOMPATFX;
 
+const int fxCompatPlatformId(const int);
 const PCOMPATFX fxCompatTblPtr(void);
+/* fxtime.c */
+typedef struct timeEvent {
+    void *Kill, *Set;
+} EVENTFX, * PEVENTFX;
+void fxEventHookPtr(const PEVENTFX);
 #endif //__HPAT_H

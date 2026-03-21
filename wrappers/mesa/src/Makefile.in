@@ -5,7 +5,7 @@ CC=$(CROSS)gcc
 RC=windres
 DLLTOOL=dlltool
 STRIP=strip
-CFLAGS=-march=x86-64-v2 -mtune=generic -O3
+CFLAGS=-march=x86-64-v2 -mtune=generic -mfpmath=sse -O3
 CFLAGS+=-pipe -I$(QEMU_SRC_DIR)/hw/mesa -I$(FXLIB) -Wall -Werror -flto=auto -fomit-frame-pointer
 LDFLAGS=-static-libgcc
 LDFLAGS+=-Wl,--disable-auto-image-base,--no-seh,--dynamicbase,--nxcompat
@@ -19,18 +19,24 @@ C_OBJS:=\
     fxhpat.o \
     fxlib9x.o \
     fxlibnt.o \
+    fxtime.o \
     md5.o \
 
 
-all: fxlib $(TARGET) $(TOOLS)
+all: fxlib $(TARGET) exports-check $(TOOLS)
+
+exports-check: $(TARGET)
+	@if [ $$(objdump -x $(TARGET) | grep "\[[\ 0-9]*\]" | grep -v "^\[" | \
+		grep -v -e reloc -e Export\ RVA | wc -l) -ne 2977 ]; \
+		then exit 1; fi
 
 $(TARGET): $(C_OBJS) szdata.o wrapgl32.o stamp.o
 	@echo "  CFLAGS  $(CFLAGS)"
 	@echo "  LDFLAGS $(LDFLAGS)"
 	@$(CC) -shared $(CFLAGS) -o $@ $+ $(LDFLAGS)
-	@$(GENDEF) - $@ | sed "s/\(@[0-9]*\)@.*/\1/;s/\(^.*\)\(@[0-9]*\)/\1\ =\ \1\2/;/CallWndProc/d;s/^mgl/wgl/;s/wgd//" | \
-		sed "s/\ ;\ Check!!!.*//" | \
-		grep -e ^LIB -e ^EXP -e "\ =\ " > $(@:.dll=.def)
+	@$(GENDEF) - $@ | sed "s/\(@[0-9]*\)@.*/\1/;s/\(^.*\)\(@[0-9]*\)/\1\ =\ \1\2/;s/^mgl/wgl/;s/wgd//" | \
+		sed "s/\ ;\ Check!!!.*//;/lto_priv/d;/CallWndProc/d" | \
+		grep -e ^LIB -e ^EXP -e " = " > $(@:.dll=.def)
 	@echo "  LD  $@"
 	@$(CC) -shared $(CFLAGS) -o $@ $(@:dll=def) $+ $(LDFLAGS)
 
@@ -39,7 +45,7 @@ $(TOOLS):
 	@$(CC) $(CFLAGS) -s -o $@ $(SRCDIR)/wglinfo.c $(LDFLAGS) -lgdi32 -lopengl32
 
 stamp.o:
-	@git rev-parse HEAD | sed "s/\(.......\).*/const\ char\ rev_\[\]\ =\ \"\1\-\";/" > /tmp/$(@:o=c)
+	@git rev-parse --short HEAD | sed "s/\(.*\)/const\ char\ rev_\[\]\ =\ \"\1\-\";/" > /tmp/$(@:o=c)
 	@echo -n "  REV $@"; cat /tmp/$(@:o=c) | sed "s/.*rev_\[\]\ =//;s/;//"
 	@$(CC) -c -o $@ /tmp/$(@:o=c)
 
@@ -59,7 +65,7 @@ clean:
 	@if [ -f $(TARGET) ]; then \
 	    $(STRIP) --strip-unneeded $(TARGET); \
 	    sh -c 'ls -l $(TARGET)'; \
-	    strings $(TARGET) | grep "\ build\ "; fi
+	    strings $(TARGET) | grep " build "; fi
 
 distclean: clean
 	@rm -f $(TARGET) $(TOOLS)

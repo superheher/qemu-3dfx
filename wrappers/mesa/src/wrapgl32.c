@@ -13,7 +13,9 @@
 #define INLINE inline
 #define PT_CALL __stdcall
 #define COMPACT __attribute__((optimize("Os")))
-#define COMPACT_FRAME COMPACT __attribute__((optimize("-fno-omit-frame-pointer")))
+#define COMPACT_FRAME COMPACT \
+    __attribute__((target("no-sse2"))) \
+    __attribute__((optimize("-fno-omit-frame-pointer")))
 #define LOG_NAME "C:\\WRAPGL32.LOG"
 #define TRACE_PNAME(p) \
     if ((logpname[p>>3] & (1<<(p%8))) == 0) { \
@@ -67,7 +69,7 @@ static int InitMesaPTMMBase(PDRVFUNC pDrv)
         return 1;
     mdata = &mfifo[MAX_FIFO];
     pt = &mfifo[1];
-    if (mfifo[1] == (uint32_t)(ptm + (0xFC0U >> 2)))
+    if ((mfifo[1] & 0xFFFU) == ((uint32_t)(ptm + (0xFC0U >> 2)) & 0xFFFU))
         return 1;
     mfifo[0] = FIRST_FIFO;
     mdata[0] = ALIGNED(1) >> 2;
@@ -250,9 +252,15 @@ static void PrepVertexArray(int start, int end, int sizei)
         n += ALIGNED((cbElem*(end - start) + Interleaved.size));
     }
     else {
+        void PT_CALL glDisableClientState(uint32_t);
         if (vtxArry.Color.enable && vtxArry.Color.ptr) {
+            int ucb;
             cbElem = (vtxArry.Color.stride)? vtxArry.Color.stride:szgldata(vtxArry.Color.size, vtxArry.Color.type);
-            n += ALIGNED((cbElem*(end - start) + szgldata(vtxArry.Color.size, vtxArry.Color.type)));
+            ucb = ALIGNED((cbElem*(end - start) + szgldata(vtxArry.Color.size, vtxArry.Color.type)));
+            if (IsBadReadPtr(vtxArry.Color.ptr, ucb))
+                glDisableClientState(GL_COLOR_ARRAY);
+            else
+                n += ucb;
         }
         if (vtxArry.EdgeFlag.enable && vtxArry.EdgeFlag.ptr) {
             cbElem = (vtxArry.EdgeFlag.stride)? vtxArry.EdgeFlag.stride:szgldata(vtxArry.EdgeFlag.size, vtxArry.EdgeFlag.type);
@@ -273,7 +281,6 @@ static void PrepVertexArray(int start, int end, int sizei)
                 ucb = ALIGNED((cbElem*(end - start) + szgldata(vtxArry.TexCoord[i].size, vtxArry.TexCoord[i].type)));
                 if (IsBadReadPtr(vtxArry.TexCoord[i].ptr, ucb)) {
                     void PT_CALL glClientActiveTexture(uint32_t);
-                    void PT_CALL glDisableClientState(uint32_t);
                     glClientActiveTexture(GL_TEXTURE0 + i);
                     glDisableClientState(GL_TEXTURE_COORD_ARRAY);
                 }
@@ -381,7 +388,7 @@ static void InitClientStates(void)
         FILE *f = fopen("NUL", "w"); int c = fprintf(f, fmt, ##__VA_ARGS__); fclose(f); \
         char *str = HeapAlloc(GetProcessHeap(), 0, ALIGNED((c+1))); \
         wsprintf(str, fmt, ##__VA_ARGS__); \
-        glDebugMessageInsertARB(GL_DEBUG_SOURCE_OTHER_ARB, GL_DEBUG_TYPE_OTHER_ARB, GL_DEBUG_SEVERITY_LOW_ARB, -1, (c+1), (uint32_t)str); \
+        glDebugMessageInsertARB(GL_DEBUG_SOURCE_OTHER, GL_DEBUG_TYPE_OTHER, GL_DEBUG_SEVERITY_LOW, -1, (c+1), (uint32_t)str); \
         HeapFree(GetProcessHeap(), 0, str); \
     } while(0)
 
@@ -450,14 +457,16 @@ static void fltrxstr(const char *xstr, size_t len, const char *bless)
 struct mglOptions {
     int bufoAcc;
     int dispTimerMS;
-    int ovrdSync;
-    int scaleX;
+    int swapInt;
     int useMSAA;
     int useSRGB;
+    int useZERO;
+    int bltFlip;
+    int scalerOff;
     int vsyncOff;
     int xstrYear;
 };
-static int swapFps;
+static int swapCur, swapFps, texClampFix;
 static int parse_value(const char *str, const char *tok, int *val)
 {
     int ret = (memcmp(str, tok, strlen(tok)))? 0:1;
@@ -465,30 +474,62 @@ static int parse_value(const char *str, const char *tok, int *val)
         *val = strtol(str + strlen(tok), 0, 10);
     return ret;
 }
+static int display_device_supported(void)
+{
+    DISPLAY_DEVICE dd = { .cb = sizeof(DISPLAY_DEVICE) };
+    const char vidstr[] = "QEMU Bochs";
+    return (EnumDisplayDevices(NULL, 0, &dd, 0) &&
+        !memcmp(dd.DeviceString, vidstr, strlen(vidstr)))? 1:0;
+}
+static int ctx0_quirks(void)
+{
+    const char *use_ctx0[] = {
+        "DX7HRDisplay",
+        "DX7HRTnLDisplay",
+        0,
+    };
+    int i;
+    for (i = 0; use_ctx0[i]; i++) {
+        if (GetModuleHandle(use_ctx0[i]))
+            break;
+    }
+    return (use_ctx0[i])? 1:0;
+}
 static void parse_options(struct mglOptions *opt)
 {
     FILE *f = opt_fopen();
     memset(opt, 0, sizeof(struct mglOptions));
+    /* Sync host color cursor only for Bochs SVGA */
+    swapCur = display_device_supported();
+    opt->useZERO = ctx0_quirks() << 5;
     if (f) {
         char line[MAX_XSTR];
         int i, v;
         while(fgets(line, MAX_XSTR, f)) {
             i = parse_value(line, "DispTimerMS,", &v);
             opt->dispTimerMS = (i == 1)? (0x8000U | (v & 0x7FFFU)):opt->dispTimerMS;
-            i = parse_value(line, "ScaleWidth,", &v);
-            opt->scaleX = (i == 1)? (v & 0x7FFFU):opt->scaleX;
-            i = parse_value(line, "OverrideSync,", &v);
-            opt->ovrdSync = (i == 1)? (v & 0x03U):opt->ovrdSync;
+            i = parse_value(line, "SwapInterval,", &v);
+            opt->swapInt = (i == 1)? (v & 0x03U):opt->swapInt;
             i = parse_value(line, "BufOAccelEN,", &v);
             opt->bufoAcc = ((i == 1) && v)? 1:opt->bufoAcc;
             i = parse_value(line, "ContextMSAA,", &v);
             opt->useMSAA = ((i == 1) && v)? ((v & 0x03U) << 2):opt->useMSAA;
             i = parse_value(line, "ContextSRGB,", &v);
             opt->useSRGB = ((i == 1) && v)? 1:opt->useSRGB;
+            i = parse_value(line, "CtxZeroQuirksOff,", &v);
+            opt->useZERO = ((i == 1) && v)? 0:opt->useZERO;
+            i = parse_value(line, "ScalerBltFlip,", &v);
+            opt->bltFlip = ((i == 1) && v)? 0x12U:opt->bltFlip;
+            i = parse_value(line, "RenderScalerOff,", &v);
+            opt->scalerOff = ((i == 1) && v)? 2:opt->scalerOff;
             i = parse_value(line, "ContextVsyncOff,", &v);
             opt->vsyncOff = ((i == 1) && v)? 1:opt->vsyncOff;
             i = parse_value(line, "ExtensionsYear,", &v);
             opt->xstrYear = (i == 1)? v:opt->xstrYear;
+            i = parse_value(line, "ConformantTexClampOff,", &v);
+            texClampFix = ((i == 1) && v)? 1:texClampFix;
+            i = parse_value(line, "CursorSyncOff,", &v);
+            swapCur = ((i == 1) && v)? 0:swapCur;
             i = parse_value(line, "FpsLimit,", &v);
             swapFps = (i == 1)? (v & 0x7FU):swapFps;
         }
@@ -1363,7 +1404,7 @@ void PT_CALL glClientActiveTexture(uint32_t arg0) {
 void PT_CALL glClientActiveTextureARB(uint32_t arg0) {
     pt[1] = arg0; 
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glClientActiveTextureARB, 1);
-    if ((arg0 & 0xFFE0U) == GL_TEXTURE0_ARB)
+    if ((arg0 & 0xFFE0U) == GL_TEXTURE0)
         vtxArry.texUnit = arg0 & (MAX_TEXUNIT - 1);
 }
 void PT_CALL glClientActiveVertexStreamATI(uint32_t arg0) {
@@ -1628,7 +1669,7 @@ void PT_CALL glColorMask(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t a
 }
 void PT_CALL glColorMaskIndexedEXT(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4) {
     pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; pt[5] = arg4; 
-    pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glColorMaskIndexedEXT;
+    pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glColorMaskIndexedEXT, 5);
 }
 void PT_CALL glColorMaski(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4) {
     pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; pt[5] = arg4; 
@@ -2540,7 +2581,7 @@ void PT_CALL glDepthBoundsEXT(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint3
 }
 void PT_CALL glDepthBoundsdNV(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3) {
     pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; 
-    pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glDepthBoundsdNV;
+    pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glDepthBoundsdNV, 4);
 }
 void PT_CALL glDepthFunc(uint32_t arg0) {
     pt[1] = arg0; 
@@ -2614,7 +2655,7 @@ void PT_CALL glDisableClientStateiEXT(uint32_t arg0, uint32_t arg1) {
 }
 void PT_CALL glDisableIndexedEXT(uint32_t arg0, uint32_t arg1) {
     pt[1] = arg0; pt[2] = arg1; 
-    pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glDisableIndexedEXT;
+    pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glDisableIndexedEXT, 2);
 }
 void PT_CALL glDisableVariantClientStateEXT(uint32_t arg0) {
     pt[1] = arg0; 
@@ -2774,10 +2815,13 @@ void PT_CALL glDrawElements(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_
                 start = (p[i] < start)? p[i]:start;
             }
         }
-        PrepVertexArray(start, end, ALIGNED(arg1 * szgldata(0, arg2)));
-        fifoAddData(0, arg3, ALIGNED(arg1 * szgldata(0, arg2)));
-        if (vtxArry.arrayBuf == 0)
+        if (vtxArry.arrayBuf == 0) {
+            PrepVertexArray(start, end, ALIGNED(arg1 * szgldata(0, arg2)));
+            fifoAddData(0, arg3, ALIGNED(arg1 * szgldata(0, arg2)));
             PushVertexArray(start, end);
+        }
+        else
+            fifoAddData(0, arg3, ALIGNED(arg1 * szgldata(0, arg2)));
     }
     pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; 
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glDrawElements, 4);
@@ -2815,10 +2859,13 @@ void PT_CALL glDrawElementsBaseVertex(uint32_t arg0, uint32_t arg1, uint32_t arg
                 start = (p[i] < start)? p[i]:start;
             }
         }
-        PrepVertexArray((start + arg4), (end + arg4), ALIGNED(arg1 * szgldata(0, arg2)));
-        fifoAddData(0, arg3, ALIGNED(arg1 * szgldata(0, arg2)));
-        if (vtxArry.arrayBuf == 0)
+        if (vtxArry.arrayBuf == 0) {
+            PrepVertexArray((start + arg4), (end + arg4), ALIGNED(arg1 * szgldata(0, arg2)));
+            fifoAddData(0, arg3, ALIGNED(arg1 * szgldata(0, arg2)));
             PushVertexArray((start + arg4), (end + arg4));
+        }
+        else
+            fifoAddData(0, arg3, ALIGNED(arg1 * szgldata(0, arg2)));
     }
     pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; pt[5] = arg4; 
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glDrawElementsBaseVertex, 5);
@@ -2861,10 +2908,13 @@ void PT_CALL glDrawElementsInstanced(uint32_t arg0, uint32_t arg1, uint32_t arg2
                 start = (p[i] < start)? p[i]:start;
             }
         }
-        PrepVertexArray(start, end, ALIGNED(arg1 * szgldata(0, arg2)));
-        fifoAddData(0, arg3, ALIGNED(arg1 * szgldata(0, arg2)));
-        if (vtxArry.arrayBuf == 0)
+        if (vtxArry.arrayBuf == 0) {
+            PrepVertexArray(start, end, ALIGNED(arg1 * szgldata(0, arg2)));
+            fifoAddData(0, arg3, ALIGNED(arg1 * szgldata(0, arg2)));
             PushVertexArray(start, end);
+        }
+        else
+            fifoAddData(0, arg3, ALIGNED(arg1 * szgldata(0, arg2)));
     }
     pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; pt[5] = arg4; 
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glDrawElementsInstanced, 5);
@@ -2902,10 +2952,13 @@ void PT_CALL glDrawElementsInstancedARB(uint32_t arg0, uint32_t arg1, uint32_t a
                 start = (p[i] < start)? p[i]:start;
             }
         }
-        PrepVertexArray(start, end, ALIGNED(arg1 * szgldata(0, arg2)));
-        fifoAddData(0, arg3, ALIGNED(arg1 * szgldata(0, arg2)));
-        if (vtxArry.arrayBuf == 0)
+        if (vtxArry.arrayBuf == 0) {
+            PrepVertexArray(start, end, ALIGNED(arg1 * szgldata(0, arg2)));
+            fifoAddData(0, arg3, ALIGNED(arg1 * szgldata(0, arg2)));
             PushVertexArray(start, end);
+        }
+        else
+            fifoAddData(0, arg3, ALIGNED(arg1 * szgldata(0, arg2)));
     }
     pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; pt[5] = arg4; 
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glDrawElementsInstancedARB, 5);
@@ -2943,10 +2996,13 @@ void PT_CALL glDrawElementsInstancedBaseInstance(uint32_t arg0, uint32_t arg1, u
                 start = (p[i] < start)? p[i]:start;
             }
         }
-        PrepVertexArray(start, end, ALIGNED(arg1 * szgldata(0, arg2)));
-        fifoAddData(0, arg3, ALIGNED(arg1 * szgldata(0, arg2)));
-        if (vtxArry.arrayBuf == 0)
+        if (vtxArry.arrayBuf == 0) {
+            PrepVertexArray(start, end, ALIGNED(arg1 * szgldata(0, arg2)));
+            fifoAddData(0, arg3, ALIGNED(arg1 * szgldata(0, arg2)));
             PushVertexArray(start, end);
+        }
+        else
+            fifoAddData(0, arg3, ALIGNED(arg1 * szgldata(0, arg2)));
     }
     pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; pt[5] = arg4; pt[6] = arg5; 
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glDrawElementsInstancedBaseInstance, 6);
@@ -2984,10 +3040,13 @@ void PT_CALL glDrawElementsInstancedBaseVertex(uint32_t arg0, uint32_t arg1, uin
                 start = (p[i] < start)? p[i]:start;
             }
         }
-        PrepVertexArray((start + arg5), (end + arg5), ALIGNED(arg1 * szgldata(0, arg2)));
-        fifoAddData(0, arg3, ALIGNED(arg1 * szgldata(0, arg2)));
-        if (vtxArry.arrayBuf == 0)
+        if (vtxArry.arrayBuf == 0) {
+            PrepVertexArray((start + arg5), (end + arg5), ALIGNED(arg1 * szgldata(0, arg2)));
+            fifoAddData(0, arg3, ALIGNED(arg1 * szgldata(0, arg2)));
             PushVertexArray((start + arg5), (end + arg5));
+        }
+        else
+            fifoAddData(0, arg3, ALIGNED(arg1 * szgldata(0, arg2)));
     }
     pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; pt[5] = arg4; pt[6] = arg5; 
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glDrawElementsInstancedBaseVertex, 6);
@@ -3025,10 +3084,13 @@ void PT_CALL glDrawElementsInstancedBaseVertexBaseInstance(uint32_t arg0, uint32
                 start = (p[i] < start)? p[i]:start;
             }
         }
-        PrepVertexArray((start + arg5), (end + arg5), ALIGNED(arg1 * szgldata(0, arg2)));
-        fifoAddData(0, arg3, ALIGNED(arg1 * szgldata(0, arg2)));
-        if (vtxArry.arrayBuf == 0)
+        if (vtxArry.arrayBuf == 0) {
+            PrepVertexArray((start + arg5), (end + arg5), ALIGNED(arg1 * szgldata(0, arg2)));
+            fifoAddData(0, arg3, ALIGNED(arg1 * szgldata(0, arg2)));
             PushVertexArray((start + arg5), (end + arg5));
+        }
+        else
+            fifoAddData(0, arg3, ALIGNED(arg1 * szgldata(0, arg2)));
     }
     pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; pt[5] = arg4; pt[6] = arg5; pt[7] = arg6; 
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glDrawElementsInstancedBaseVertexBaseInstance, 7);
@@ -3066,10 +3128,13 @@ void PT_CALL glDrawElementsInstancedEXT(uint32_t arg0, uint32_t arg1, uint32_t a
                 start = (p[i] < start)? p[i]:start;
             }
         }
-        PrepVertexArray(start, end, ALIGNED(arg1 * szgldata(0, arg2)));
-        fifoAddData(0, arg3, ALIGNED(arg1 * szgldata(0, arg2)));
-        if (vtxArry.arrayBuf == 0)
+        if (vtxArry.arrayBuf == 0) {
+            PrepVertexArray(start, end, ALIGNED(arg1 * szgldata(0, arg2)));
+            fifoAddData(0, arg3, ALIGNED(arg1 * szgldata(0, arg2)));
             PushVertexArray(start, end);
+        }
+        else
+            fifoAddData(0, arg3, ALIGNED(arg1 * szgldata(0, arg2)));
     }
     pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; pt[5] = arg4; 
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glDrawElementsInstancedEXT, 5);
@@ -3105,30 +3170,39 @@ void PT_CALL glDrawRangeElementArrayATI(uint32_t arg0, uint32_t arg1, uint32_t a
 }
 void PT_CALL glDrawRangeElements(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4, uint32_t arg5) {
     if (vtxArry.elemArryBuf == 0) {
-        PrepVertexArray(arg1, arg2, ALIGNED(arg3 * szgldata(0, arg4)));
-        fifoAddData(0, arg5, ALIGNED(arg3 * szgldata(0, arg4)));
-        if (vtxArry.arrayBuf == 0)
+        if (vtxArry.arrayBuf == 0) {
+            PrepVertexArray(arg1, arg2, ALIGNED(arg3 * szgldata(0, arg4)));
+            fifoAddData(0, arg5, ALIGNED(arg3 * szgldata(0, arg4)));
             PushVertexArray(arg1, arg2);
+        }
+        else
+            fifoAddData(0, arg5, ALIGNED(arg3 * szgldata(0, arg4)));
     }
     pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; pt[5] = arg4; pt[6] = arg5; 
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glDrawRangeElements, 6);
 }
 void PT_CALL glDrawRangeElementsBaseVertex(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4, uint32_t arg5, uint32_t arg6) {
     if (vtxArry.elemArryBuf == 0) {
-        PrepVertexArray(arg1 + arg6, arg2 + arg6, ALIGNED(arg3 * szgldata(0, arg4)));
-        fifoAddData(0, arg5, ALIGNED(arg3 * szgldata(0, arg4)));
-        if (vtxArry.arrayBuf == 0)
+        if (vtxArry.arrayBuf == 0) {
+            PrepVertexArray(arg1 + arg6, arg2 + arg6, ALIGNED(arg3 * szgldata(0, arg4)));
+            fifoAddData(0, arg5, ALIGNED(arg3 * szgldata(0, arg4)));
             PushVertexArray(arg1 + arg6, arg2 + arg6);
+        }
+        else
+            fifoAddData(0, arg5, ALIGNED(arg3 * szgldata(0, arg4)));
     }
     pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; pt[5] = arg4; pt[6] = arg5; pt[7] = arg6; 
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glDrawRangeElementsBaseVertex, 7);
 }
 void PT_CALL glDrawRangeElementsEXT(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4, uint32_t arg5) {
     if (vtxArry.elemArryBuf == 0) {
-        PrepVertexArray(arg1, arg2, ALIGNED(arg3 * szgldata(0, arg4)));
-        fifoAddData(0, arg5, ALIGNED(arg3 * szgldata(0, arg4)));
-        if (vtxArry.arrayBuf == 0)
+        if (vtxArry.arrayBuf == 0) {
+            PrepVertexArray(arg1, arg2, ALIGNED(arg3 * szgldata(0, arg4)));
+            fifoAddData(0, arg5, ALIGNED(arg3 * szgldata(0, arg4)));
             PushVertexArray(arg1, arg2);
+        }
+        else
+            fifoAddData(0, arg5, ALIGNED(arg3 * szgldata(0, arg4)));
     }
     pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; pt[5] = arg4; pt[6] = arg5; 
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glDrawRangeElementsEXT, 6);
@@ -3227,7 +3301,7 @@ void PT_CALL glEnableClientStateiEXT(uint32_t arg0, uint32_t arg1) {
 }
 void PT_CALL glEnableIndexedEXT(uint32_t arg0, uint32_t arg1) {
     pt[1] = arg0; pt[2] = arg1; 
-    pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glEnableIndexedEXT;
+    pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glEnableIndexedEXT, 2);
 }
 void PT_CALL glEnableVariantClientStateEXT(uint32_t arg0) {
     pt[1] = arg0; 
@@ -5645,8 +5719,11 @@ void PT_CALL glGetTextureSubImage(uint32_t arg0, uint32_t arg1, uint32_t arg2, u
     pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glGetTextureSubImage;
 }
 void PT_CALL glGetTrackMatrixivNV(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3) {
+    uint32_t n;
     pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; 
     pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glGetTrackMatrixivNV;
+    fifoOutData(0, (uint32_t)&n, sizeof(uint32_t));
+    fifoOutData(ALIGNED(sizeof(uint32_t)), arg3, n*sizeof(int));
 }
 void PT_CALL glGetTransformFeedbackVarying(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4, uint32_t arg5, uint32_t arg6) {
     uint32_t n, e;
@@ -6396,9 +6473,12 @@ uint32_t PT_CALL glIsEnabled(uint32_t arg0) {
     ret = *pt0;
     return ret;
 }
-void PT_CALL glIsEnabledIndexedEXT(uint32_t arg0, uint32_t arg1) {
+uint32_t PT_CALL glIsEnabledIndexedEXT(uint32_t arg0, uint32_t arg1) {
+    uint32_t ret;
     pt[1] = arg0; pt[2] = arg1; 
     pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glIsEnabledIndexedEXT;
+    ret = *pt0;
+    return ret;
 }
 uint32_t PT_CALL glIsEnabledi(uint32_t arg0, uint32_t arg1) {
     uint32_t ret;
@@ -6760,7 +6840,9 @@ void PT_CALL glLoadName(uint32_t arg0) {
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glLoadName, 1);
 }
 void PT_CALL glLoadProgramNV(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3) {
-    fifoAddData(0, arg3, arg2);
+    const int strz[2] = {0, 0};
+    fifoAddData(0, arg3, ALIGNED(arg2));
+    fifoAddData(0, (uint32_t)strz, ALIGNED(1));
     pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; 
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glLoadProgramNV, 4);
 }
@@ -8813,7 +8895,9 @@ void PT_CALL glProgramPathFragmentInputGenNV(uint32_t arg0, uint32_t arg1, uint3
     pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glProgramPathFragmentInputGenNV;
 }
 void PT_CALL glProgramStringARB(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3) {
+    const int strz[2] = {0, 0};
     fifoAddData(0, arg3, ALIGNED(arg2));
+    fifoAddData(0, (uint32_t)strz, ALIGNED(1));
     pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; 
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glProgramStringARB, 4);
 }
@@ -10475,7 +10559,7 @@ void PT_CALL glTexBufferEXT(uint32_t arg0, uint32_t arg1, uint32_t arg2) {
 }
 void PT_CALL glTexBufferRange(uint32_t arg0, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4) {
     pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; pt[4] = arg3; pt[5] = arg4; 
-    pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glTexBufferRange;
+    pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glTexBufferRange, 5);
 }
 void PT_CALL glTexBumpParameterfvATI(uint32_t arg0, uint32_t arg1) {
     pt[1] = arg0; pt[2] = arg1; 
@@ -10982,7 +11066,9 @@ void PT_CALL glTexParameterIuivEXT(uint32_t arg0, uint32_t arg1, uint32_t arg2) 
     pt0 = (uint32_t *)pt[0]; *pt0 = FEnum_glTexParameterIuivEXT;
 }
 void PT_CALL glTexParameterf(uint32_t arg0, uint32_t arg1, uint32_t arg2) {
+    float *f = (float *)&pt[3];
     pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; 
+    if (texClampFix && GL_CLAMP == *f) *f = GL_CLAMP_TO_EDGE;
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glTexParameterf, 3);
 }
 void PT_CALL glTexParameterfv(uint32_t arg0, uint32_t arg1, uint32_t arg2) {
@@ -10992,6 +11078,7 @@ void PT_CALL glTexParameterfv(uint32_t arg0, uint32_t arg1, uint32_t arg2) {
 }
 void PT_CALL glTexParameteri(uint32_t arg0, uint32_t arg1, uint32_t arg2) {
     pt[1] = arg0; pt[2] = arg1; pt[3] = arg2; 
+    if (texClampFix && GL_CLAMP == pt[3]) pt[3] = GL_CLAMP_TO_EDGE;
     pt0 = (uint32_t *)pt[0]; FIFO_GLFUNC(FEnum_glTexParameteri, 3);
 }
 void PT_CALL glTexParameteriv(uint32_t arg0, uint32_t arg1, uint32_t arg2) {
@@ -16559,6 +16646,7 @@ static uint32_t PT_CALL wglSwapIntervalEXT (uint32_t arg0)
     parse_options(&cfg);
     WGL_FUNCP("wglSwapIntervalEXT");
     argsp[0] = (cfg.vsyncOff)? 0:arg0;
+    swapFps = (argsp[0] == 0)? swapFps:0xFEU;
     ptm[0xFDC >> 2] = MESAGL_MAGIC;
     WGL_FUNCP_RET(ret);
     return ret;
@@ -16868,7 +16956,12 @@ static void wglFreeMemoryNV(void *pointer) { }
 static void WINAPI
 wglSetDeviceCursor3DFX(HCURSOR hCursor)
 {
+    static HCURSOR last_cur;
     ICONINFO ic;
+
+    if (!swapCur || (last_cur == hCursor))
+        return;
+
     BOOL (WINAPI *p_DeleteObject)(HANDLE) = (BOOL (WINAPI *)(HANDLE))
         GetProcAddress(GetModuleHandle("gdi32.dll"), "DeleteObject");
     int (WINAPI *p_GetDIBits)(HDC, HBITMAP, UINT, UINT, LPVOID, LPBITMAPINFO, UINT) =
@@ -16880,24 +16973,36 @@ wglSetDeviceCursor3DFX(HCURSOR hCursor)
         unsigned char binfo[SIZE_BMPINFO];
         BITMAPINFO *pbmi = (BITMAPINFO *)binfo;
         HDC hdc = GetDC(GLwnd);
+        HBITMAP hBmp = (ic.hbmColor)? ic.hbmColor:ic.hbmMask;
         memset(pbmi, 0, SIZE_BMPINFO);
         pbmi->bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
         pbmi->bmiHeader.biPlanes = 1;
-        if (hdc && ic.hbmColor && p_GetDIBits(hdc, ic.hbmColor, 0, 0, NULL, pbmi, DIB_RGB_COLORS) &&
-            (pbmi->bmiHeader.biSizeImage == (32 * 32 * sizeof(uint32_t))) &&
-            (pbmi->bmiHeader.biBitCount == 32) &&
+        if (hdc && hBmp && p_GetDIBits(hdc, hBmp, 0, 0, NULL, pbmi, DIB_RGB_COLORS) &&
             (pbmi->bmiHeader.biWidth > ic.xHotspot) &&
             (pbmi->bmiHeader.biHeight > ic.yHotspot)) {
             WGL_FUNCP("wglSetDeviceCursor3DFX");
+            uint32_t *data = &fbtm[(MGLFBT_SIZE - pbmi->bmiHeader.biSizeImage) >> 2];
             argsp[0] = ic.xHotspot;
             argsp[1] = ic.yHotspot;
             argsp[2] = pbmi->bmiHeader.biWidth;
             argsp[3] = pbmi->bmiHeader.biHeight;
             pbmi->bmiHeader.biHeight = 0 - pbmi->bmiHeader.biHeight;
-            p_GetDIBits(hdc, ic.hbmColor, 0, argsp[3],
-                &fbtm[(MGLFBT_SIZE - pbmi->bmiHeader.biSizeImage) >> 2],
-                pbmi, DIB_RGB_COLORS);
+            p_GetDIBits(hdc, hBmp, 0, argsp[3], data, pbmi, DIB_RGB_COLORS);
+            ReleaseDC(GLwnd, hdc);
+            if (pbmi->bmiHeader.biBitCount == 1)
+                argsp[3] |= 1;
+            if (pbmi->bmiHeader.biBitCount > 16) {
+                int h, i;
+#define ALPHA_MASK 0xFF000000U
+                for (h = 0; h < (pbmi->bmiHeader.biSizeImage >> 2); h++)
+                    if (data[h] & ALPHA_MASK) break;
+#define COLOR_MASK 0x00FFFFFFU
+                for (i = 0; h == (pbmi->bmiHeader.biSizeImage >> 2) && i < h; i++)
+                    data[i] = (data[i] && (data[i] ^ COLOR_MASK))?
+                        (data[i] | ALPHA_MASK):COLOR_MASK;
+            }
             ptm[0xFDC >> 2] = MESAGL_MAGIC;
+            last_cur = hCursor;
         }
     }
     if (p_DeleteObject) {
@@ -16940,7 +17045,7 @@ static void HookPatchGamma(const uint32_t start, const uint32_t *iat, const DWOR
 
 void HookDeviceGammaRamp(const uint32_t caddr)
 {
-    uint32_t addr, *patch;
+    uint32_t addr, *patch, range;
 
     if (caddr && !IsBadReadPtr((void *)(caddr - 0x06), 0x06)) {
         uint16_t *callOp = (uint16_t *)(caddr - 0x06);
@@ -16959,10 +17064,20 @@ void HookDeviceGammaRamp(const uint32_t caddr)
     } \
     addr = (addr && (0x4550U == *(uint32_t *)addr))? addr:0; \
     patch = (uint32_t *)(addr & ~(PAGE_SIZE - 1)); \
-    HookParseRange(&addr, &patch, PAGE_SIZE); \
-    HookPatchGamma(addr, patch, PAGE_SIZE - (((uint32_t)patch) & (PAGE_SIZE - 1)));
+    range = PAGE_SIZE; \
+    HookParseRange(&addr, &patch, &range); \
+    HookPatchGamma(addr, patch, range - (((uint32_t)patch) & (PAGE_SIZE - 1)));
     GLGAMMA_HOOK("opengldrv.dll");
+    GLGAMMA_HOOK(0);
 #undef GLGAMMA_HOOK
+}
+
+static void WINAPI
+HelperHookTime(const HMODULE mod)
+{
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    HookGetTimeModAddr(&si, 0, (uint32_t)mod);
 }
 
 BOOL WINAPI
@@ -17050,6 +17165,8 @@ mglGetProcAddress (uint32_t arg0)
     FUNC_WGL_EXT(glDebugMessageCallbackARB);
     FUNC_WGL_EXT(glDebugMessageControlARB);
     FUNC_WGL_EXT(glDebugMessageInsertARB);
+    /* Helper */
+    FUNC_WGL_EXT(HelperHookTime);
 #undef FUNC_WGL_EXT
 
     ret = (uint32_t)fptr;
@@ -17067,6 +17184,9 @@ mglGetProcAddress (uint32_t arg0)
     }
     return ret;
 }
+uint32_t PT_CALL COMPACT
+mglGetDefaultProcAddress (uint32_t arg0)
+{ return mglGetProcAddress(arg0); }
 
 uint32_t PT_CALL COMPACT
 mglCreateContext (uint32_t arg0)
@@ -17094,7 +17214,7 @@ mglCreateContext (uint32_t arg0)
 uint32_t PT_CALL COMPACT
 mglMakeCurrent (uint32_t arg0, uint32_t arg1)
 {
-    static const char icdBuild[] __attribute__((used)) = 
+    static const char icdBuild[] __attribute__((aligned(16),used)) =
         __TIME__" "__DATE__" build ";
     uint32_t *ptVer = &mfifo[(MGLSHM_SIZE - PAGE_SIZE) >> 2];
     if (!currDC && !mglCreateContext(arg0))
@@ -17113,8 +17233,8 @@ mglMakeCurrent (uint32_t arg0, uint32_t arg1)
             if (wglGetSwapIntervalEXT())
                 wglSwapIntervalEXT(0);
         }
-        else if (cfg.ovrdSync && (cfg.ovrdSync != wglGetSwapIntervalEXT()))
-            wglSwapIntervalEXT(cfg.ovrdSync);
+        else if (cfg.swapInt && (cfg.swapInt != wglGetSwapIntervalEXT()))
+            wglSwapIntervalEXT(cfg.swapInt);
         if (logpname)
             HeapFree(GetProcessHeap(), 0, logpname);
         logpname = HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, 0x2000);
@@ -17216,28 +17336,34 @@ uint32_t PT_CALL mglUseFontOutlinesW(uint32_t arg0, uint32_t arg1, uint32_t arg2
 int WINAPI wglSwapBuffers (HDC hdc)
 {
     static POINT last_pos;
-    static uint32_t timestamp;
+    static DWORD timestamp;
     uint32_t ret, *swapRet = &mfifo[(MGLSHM_SIZE - ALIGNED(1)) >> 2];
-    uint32_t t = GetTickCount();
+    DWORD t = GetTickCount();
     CURSORINFO ci = { .cbSize = sizeof(CURSORINFO) };
-    if (((t - timestamp) > (1000/60)) && GetCursorInfo(&ci)) {
+    if (((t - timestamp) >= 16) &&
+            display_device_supported() && GetCursorInfo(&ci)) {
         if (ci.flags != CURSOR_SHOWING)
             memset(&last_pos, 0, sizeof(POINT));
         else {
-            RECT wr, cr;
+            RECT cr;
+            LONG x_adj = ci.ptScreenPos.x, y_adj = ci.ptScreenPos.y;
             timestamp = t;
-            GetWindowRect(WindowFromDC(hdc), &wr);
             GetClientRect(WindowFromDC(hdc), &cr);
-            int top = (wr.bottom - wr.top) - cr.bottom;
-            ci.ptScreenPos.y = (ci.ptScreenPos.y > top)? (ci.ptScreenPos.y - top):0;
-            if ((ci.ptScreenPos.x < (wr.right - wr.left)) ||
-                (ci.ptScreenPos.y < (wr.bottom - wr.top))) {
-                ci.ptScreenPos.x = MulDiv(ci.ptScreenPos.x, GetSystemMetrics(SM_CXSCREEN) - 1,
-                        (wr.right - wr.left - 1));
-                ci.ptScreenPos.y = MulDiv(ci.ptScreenPos.y, GetSystemMetrics(SM_CYSCREEN) - 1,
-                        (wr.bottom - wr.top - 1));
-                memcpy(&last_pos, &ci.ptScreenPos, sizeof(POINT));
-            }
+            ScreenToClient(WindowFromDC(hdc), &ci.ptScreenPos);
+            ci.ptScreenPos.x = max(0, ci.ptScreenPos.x);
+            ci.ptScreenPos.y = max(0, ci.ptScreenPos.y);
+            x_adj -= ci.ptScreenPos.x;
+            x_adj = max(0, x_adj);
+            ci.ptScreenPos.x += x_adj;
+            y_adj -= ci.ptScreenPos.y;
+            y_adj = max(0, y_adj);
+            ci.ptScreenPos.y += y_adj;
+            ci.ptScreenPos.x = MulDiv(ci.ptScreenPos.x, GetSystemMetrics(SM_CXSCREEN) - 1,
+                    (cr.right - cr.left + x_adj + x_adj - 1));
+            ci.ptScreenPos.y = MulDiv(ci.ptScreenPos.y, GetSystemMetrics(SM_CYSCREEN) - 1,
+                    (cr.bottom - cr.top + x_adj + y_adj - 1));
+            memcpy(&last_pos, &ci.ptScreenPos, sizeof(POINT));
+            wglSetDeviceCursor3DFX(ci.hCursor);
         }
     }
 #define CURSOR_DWORD(d,p) \
@@ -17246,9 +17372,9 @@ int WINAPI wglSwapBuffers (HDC hdc)
     swapRet[0] = swapFps;
     ptm[0xFF0 >> 2] = MESAGL_MAGIC;
     ret = swapRet[0];
-    if (ret & 0xFEU) {
+    if (ret & 0x1FEU) {
         static uint32_t nexttick;
-        const uint32_t maxFPS = (ret >> 1) & 0x7FU;
+        const uint32_t maxFPS = (ret & 0x1FEU) >> 1;
         while (GetTickCount() < nexttick)
             Sleep(0);
         nexttick = GetTickCount();
@@ -17266,7 +17392,7 @@ int WINAPI mglSwapLayerBuffers(HDC hdc, UINT arg1) { return wgdSwapBuffers(hdc);
 #define PPFD_CONFIG() \
     struct mglOptions cfg; \
     parse_options(&cfg); \
-    xppfd[0] = (cfg.scaleX << 16) | cfg.useMSAA | cfg.bufoAcc; \
+    xppfd[0] = cfg.useZERO | cfg.bltFlip | cfg.useMSAA | cfg.scalerOff | cfg.bufoAcc; \
     xppfd[1] = (cfg.dispTimerMS & 0x8000U)? (cfg.dispTimerMS & 0x7FFFU):DISPTMR_DEFAULT
 
 int WINAPI wglChoosePixelFormat(HDC hdc, const PIXELFORMATDESCRIPTOR *ppfd)
@@ -17324,15 +17450,19 @@ wglSetPixelFormat(HDC hdc, int format, const PIXELFORMATDESCRIPTOR *ppfd)
 {
     uint32_t ret, *rsp, *xppfd;
     asm volatile("lea 0x04(%%ebp), %0;":"=rm"(rsp));
-    ret = (rsp[5] == rsp[1])? rsp[4]:((rsp[9] == rsp[1])? rsp[8]:rsp[0]);
+    ret = ((rsp[5] == rsp[1]) && (rsp[6] == rsp[2]))? rsp[4]:
+          ((rsp[9] == rsp[1])? rsp[8]:rsp[0]);
     HookDeviceGammaRamp(ret);
     HookTimeGetTime(ret);
+    if (!hdc && !format)
+        return 0;
     if (currGLRC) {
         mglMakeCurrent(0, 0);
         mglDeleteContext(MESAGL_MAGIC);
     }
     xppfd = &mfifo[(MGLSHM_SIZE - PAGE_SIZE) >> 2];
     xppfd[0] = format;
+    xppfd[1] = (uint32_t)ptm;
     memset(&xppfd[2], 0, sizeof(PIXELFORMATDESCRIPTOR));
     if (ppfd)
         memcpy(&xppfd[2], ppfd, sizeof(PIXELFORMATDESCRIPTOR));
@@ -17344,6 +17474,27 @@ wglSetPixelFormat(HDC hdc, int format, const PIXELFORMATDESCRIPTOR *ppfd)
 BOOL WINAPI COMPACT
 wgdSetPixelFormat(HDC hdc, int format, const PIXELFORMATDESCRIPTOR *ppfd)
 { return wglSetPixelFormat(hdc, format, ppfd); }
+
+static void mglSetAffinity(void)
+{
+    const char *ThreadAffinity[] = {
+        "Unigine_x86",
+        0,
+    };
+    int i;
+    for (i = 0; ThreadAffinity[i]; i++) {
+        if (GetModuleHandle(ThreadAffinity[i]))
+            break;
+    }
+    DWORD affinityMask[2];
+    GetProcessAffinityMask(GetCurrentProcess(), &affinityMask[0], &affinityMask[1]);
+    if (ThreadAffinity[i])
+        SetThreadAffinityMask(GetCurrentThread(), (1 << ((GetCurrentThreadId() >> 2) &
+                        ((sizeof(DWORD) << 3) - __builtin_clz(affinityMask[0]) - 1))));
+    else
+        SetProcessAffinityMask(GetCurrentProcess(), (1 << ((GetCurrentProcessId() >> 2) &
+                        ((sizeof(DWORD) << 3) - __builtin_clz(affinityMask[0]) - 1))));
+}
 
 LRESULT CALLBACK CallWndProc(int nCode, WPARAM wParam, LPARAM lParam)
 {
@@ -17375,10 +17526,7 @@ BOOL APIENTRY DllMain( HINSTANCE hModule,
     GetVersionEx(&osInfo);
     HookPatchfxCompat(osInfo.dwPlatformId);
     if (osInfo.dwPlatformId == VER_PLATFORM_WIN32_NT) {
-        DWORD affinityMask[2];
-        GetProcessAffinityMask(GetCurrentProcess(), &affinityMask[0], &affinityMask[1]);
-        SetThreadAffinityMask(GetCurrentThread(), (1 << ((GetCurrentThreadId() >> 2) &
-                        ((sizeof(DWORD) << 3) - __builtin_clz(affinityMask[0]) - 1))));
+        mglSetAffinity();
         kmdDrvInit(&drv);
     }
     else
