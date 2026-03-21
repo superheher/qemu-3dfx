@@ -7,20 +7,38 @@ on:
 
 jobs:
   build-qemu:
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
     steps:
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW32
+          update: true
+          install: >-
+            base-devel
+            git
+            rsync
+            wget
+            tar
+            patch
+            mingw-w64-i686-toolchain
+            mingw-w64-i686-glib2
+            mingw-w64-i686-pixman
+            mingw-w64-i686-SDL2
+            mingw-w64-i686-gtk3
+            mingw-w64-i686-libslirp
+            mingw-w64-i686-ninja
+            mingw-w64-i686-python
+            mingw-w64-i686-python-sphinx
+            bison
+            flex
+            gettext-devel
+
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Install dependencies
-        run: |
-          sudo dpkg --add-architecture i386
-          sudo apt-get update -qq
-          sudo apt-get install -yq ninja-build libglib2.0-dev libpixman-1-dev
-          sudo apt-get install -yq g++-multilib libfreetype6-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxext-dev pkg-config
-          sudo apt-get install -yq binutils-mingw-w64-i686 binutils-mingw-w64-x86-64 g++-mingw-w64-i686 g++-mingw-w64-x86-64 mingw-w64
-          sudo apt-get install -yq gcc libc6-dev bison flex gettext python3-sphinx mingw-w64-tools
-          sudo apt-get install -yq rsync
 
       - name: Download and patch QEMU 9.2.2
         run: |
@@ -32,10 +50,10 @@ jobs:
           patch -p0 -i ../00-qemu92x-mesa-glide.patch
           bash ../scripts/sign_commit
 
-      - name: Build QEMU (Windows i386 cross-compile)
+      - name: Build QEMU
         run: |
           mkdir build && cd build
-          ../qemu-9.2.2/configure --target-list=i386-softmmu --cross-prefix=i686-w64-mingw32- && make -j$(nproc)
+          ../qemu-9.2.2/configure --target-list=i386-softmmu && make -j$(($(nproc)))
 
       - name: Build guest wrappers (3dfx)
         run: |
@@ -57,6 +75,8 @@ jobs:
           mkdir -p release/wrappers
           cp build/qemu-system-i386.exe release/qemu/ 2>/dev/null || true
           cp build/qemu-system-i386w.exe release/qemu/ 2>/dev/null || true
+          # Copy required DLLs from MSYS2
+          ldd build/qemu-system-i386.exe 2>/dev/null | grep mingw | awk '{print $3}' | while read dll; do cp "$dll" release/qemu/; done || true
           find wrappers/3dfx/build -type f \( -name "*.dll" -o -name "*.DLL" -o -name "*.vxd" -o -name "*.VXD" -o -name "*.sys" -o -name "*.SYS" -o -name "*.exe" -o -name "*.EXE" -o -name "*.ovl" -o -name "*.OVL" \) -exec cp {} release/wrappers/ \; 2>/dev/null || true
           find wrappers/mesa/build -type f \( -name "*.dll" -o -name "*.DLL" -o -name "*.exe" -o -name "*.EXE" \) -exec cp {} release/wrappers/ \; 2>/dev/null || true
           ls -laR release/
