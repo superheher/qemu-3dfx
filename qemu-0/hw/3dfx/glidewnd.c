@@ -93,10 +93,13 @@ int glide_mapbufo(mapbufo_t *bufo, int add)
 }
 #endif
 #ifdef CONFIG_WIN32
+#ifdef CONFIG_WHPX
 #include "system/whpx.h"
+#endif
 
 int glide_mapbufo(mapbufo_t *bufo, int add)
 {
+#ifdef CONFIG_WHPX
     int ret = (!cfg_lfbHandler && !cfg_lfbWriteMerge && cfg_lfbMapBufo)? whpx_enabled():0;
 
     if (ret && bufo && bufo->hva) {
@@ -108,6 +111,9 @@ int glide_mapbufo(mapbufo_t *bufo, int add)
     }
 
     return ret;
+#else
+    return 0;
+#endif
 }
 
 static int cfg_createWnd;
