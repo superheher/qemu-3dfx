@@ -51,10 +51,14 @@ jobs:
           patch -p0 -i ../00-qemu92x-mesa-glide.patch
           bash ../scripts/sign_commit
 
+      - name: Pre-install QEMU Python dependencies
+        run: |
+          python3 -m pip install pycotap meson sphinx sphinxcontrib-serializinghtml
+
       - name: Build QEMU
         run: |
           mkdir build && cd build
-          ../qemu-9.2.2/configure --target-list=i386-softmmu --enable-download && make -j$(($(nproc)))
+          ../qemu-9.2.2/configure --target-list=i386-softmmu && make -j$(($(nproc)))
 
       - name: Build guest wrappers (3dfx)
         run: |
