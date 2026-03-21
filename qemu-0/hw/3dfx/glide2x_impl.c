@@ -862,8 +862,8 @@ int init_glide2x(const char *dllname)
         const char *libname = strcat(prefix, dllname);
         hDll = LoadLibrary(libname);
     }
-    setConfig = (void (*)(const uint32_t, void *))GetProcAddress(hDll, "_setConfig@8");
-    setConfigRes = (void (*)(const int, void *))GetProcAddress(hDll, "_setConfigRes@8");
+    setConfig = (void (__stdcall *)(const uint32_t, void *))GetProcAddress(hDll, "_setConfig@8");
+    setConfigRes = (void (__stdcall *)(const int, void *))GetProcAddress(hDll, "_setConfigRes@8");
 #endif
 #if defined(CONFIG_LINUX) || defined(CONFIG_DARWIN)
     const char *soname[] = {
