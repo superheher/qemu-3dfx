@@ -28,6 +28,7 @@ jobs:
             mingw-w64-i686-glib2
             mingw-w64-i686-pixman
             mingw-w64-i686-SDL2
+            mingw-w64-i686-meson
             mingw-w64-i686-ninja
             mingw-w64-i686-python
             mingw-w64-i686-python-pip
