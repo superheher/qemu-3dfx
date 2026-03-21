@@ -41,7 +41,7 @@ jobs:
       - name: Download and patch QEMU 9.2.2
         run: |
           wget -q https://download.qemu.org/qemu-9.2.2.tar.xz
-          tar xf qemu-9.2.2.tar.xz
+          tar xf qemu-9.2.2.tar.xz || true
           rm qemu-9.2.2.tar.xz
           cd qemu-9.2.2
           rsync -r ../qemu-0/hw/3dfx ../qemu-1/hw/mesa ./hw/
