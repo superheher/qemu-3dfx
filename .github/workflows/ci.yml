@@ -15,7 +15,7 @@ jobs:
       - name: Setup MSYS2
         uses: msys2/setup-msys2@v2
         with:
-          msystem: MINGW32
+          msystem: MINGW64
           update: true
           install: >-
             base-devel
@@ -24,16 +24,17 @@ jobs:
             wget
             tar
             patch
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-glib2
+            mingw-w64-x86_64-pixman
+            mingw-w64-x86_64-SDL2
+            mingw-w64-x86_64-meson
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-python
+            mingw-w64-x86_64-python-pip
+            mingw-w64-x86_64-python-setuptools
+            mingw-w64-x86_64-python-sphinx
             mingw-w64-i686-toolchain
-            mingw-w64-i686-glib2
-            mingw-w64-i686-pixman
-            mingw-w64-i686-SDL2
-            mingw-w64-i686-meson
-            mingw-w64-i686-ninja
-            mingw-w64-i686-python
-            mingw-w64-i686-python-pip
-            mingw-w64-i686-python-setuptools
-            mingw-w64-i686-python-sphinx
             bison
             flex
             gettext-devel
@@ -53,12 +54,12 @@ jobs:
 
       - name: Pre-install QEMU Python dependencies
         run: |
-          python3 -m pip install pycotap meson sphinx sphinxcontrib-serializinghtml
+          python3 -m pip install pycotap sphinx sphinxcontrib-serializinghtml
 
       - name: Build QEMU
         run: |
           mkdir build && cd build
-          ../qemu-9.2.2/configure --target-list=i386-softmmu --disable-whpx && make -j$(($(nproc)))
+          ../qemu-9.2.2/configure --target-list=i386-softmmu && make -j$(($(nproc)))
 
       - name: Build guest wrappers (3dfx)
         run: |
@@ -89,6 +90,6 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: qemu-3dfx-windows-i386
+          name: qemu-3dfx-windows-x86_64
           path: release/
           retention-days: 90
