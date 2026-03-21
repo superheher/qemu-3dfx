@@ -1,39 +1,69 @@
-name: Linux.
+name: Build QEMU with 3Dfx/Mesa pass-through
 
-on: [push]
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
 jobs:
-
-  linux:
+  build-qemu:
     runs-on: ubuntu-latest
     steps:
-      - name: Clone.
-        uses: actions/checkout@v3.1.0
-        with:
-          submodules: recursive
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - uses: GuillaumeFalourd/setup-rsync@v1.1
-
-      - name: First set up.
+      - name: Install dependencies
         run: |
           sudo dpkg --add-architecture i386
           sudo apt-get update -qq
-          sudo apt-get install ninja-build libglib2.0-dev libibumad-dev libibverbs-dev libpixman-1-dev
-          sudo apt-get install -yq g++-multilib libfreetype6-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxext-dev pkg-config wine-stable wine64-tools
+          sudo apt-get install -yq ninja-build libglib2.0-dev libpixman-1-dev
+          sudo apt-get install -yq g++-multilib libfreetype6-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxext-dev pkg-config
           sudo apt-get install -yq binutils-mingw-w64-i686 binutils-mingw-w64-x86-64 g++-mingw-w64-i686 g++-mingw-w64-x86-64 mingw-w64
-          sudo apt-get install -yq gcc libc6-dev ninja-build bison flex gettext python3-sphinx g++-mingw-w64-x86-64 gcc-mingw-w64-x86-64 mingw-w64-tools
-          sudo apt-get install -yq mingw-w64-tools
+          sudo apt-get install -yq gcc libc6-dev bison flex gettext python3-sphinx mingw-w64-tools
+          sudo apt-get install -yq rsync gendef
 
-      - name: Build.
+      - name: Download and patch QEMU 9.2.2
         run: |
-          # bash ./clean.sh
-          wget -q --no-check-certificate https://download.qemu.org/qemu-7.2.0.tar.xz
-          tar xf qemu-7.2.0.tar.xz
-          rm -rfv qemu-7.2.0.tar.xz
-          cd qemu-7.2.0
-          rsync -r ../qemu-0/hw/3dfx ./hw/
-          rsync -r ../qemu-1/hw/mesa ./hw/
-          patch -p0 -i ../00-qemu720-mesa-glide.patch
+          wget -q https://download.qemu.org/qemu-9.2.2.tar.xz
+          tar xf qemu-9.2.2.tar.xz
+          rm qemu-9.2.2.tar.xz
+          cd qemu-9.2.2
+          rsync -r ../qemu-0/hw/3dfx ../qemu-1/hw/mesa ./hw/
+          patch -p0 -i ../00-qemu92x-mesa-glide.patch
           bash ../scripts/sign_commit
-          rm -rfv ../build && mkdir ../build && cd ../build
-          ../qemu-7.2.0/configure --target-list=i386-softmmu --cross-prefix=i686-w64-mingw32- && make -j
-          # bash ./after-build-cleanup.sh
+
+      - name: Build QEMU (Windows i386 cross-compile)
+        run: |
+          mkdir build && cd build
+          ../qemu-9.2.2/configure --target-list=i386-softmmu --cross-prefix=i686-w64-mingw32- && make -j$(nproc)
+
+      - name: Build guest wrappers (3dfx)
+        run: |
+          cd wrappers/3dfx
+          mkdir build && cd build
+          bash ../../../scripts/conf_wrapper
+          make && make clean
+
+      - name: Build guest wrappers (mesa)
+        run: |
+          cd wrappers/mesa
+          mkdir build && cd build
+          bash ../../../scripts/conf_wrapper
+          make && make clean
+
+      - name: Collect artifacts
+        run: |
+          mkdir -p release/qemu
+          mkdir -p release/wrappers
+          cp build/qemu-system-i386.exe release/qemu/ 2>/dev/null || true
+          cp build/qemu-system-i386w.exe release/qemu/ 2>/dev/null || true
+          find wrappers/3dfx/build -type f \( -name "*.dll" -o -name "*.DLL" -o -name "*.vxd" -o -name "*.VXD" -o -name "*.sys" -o -name "*.SYS" -o -name "*.exe" -o -name "*.EXE" -o -name "*.ovl" -o -name "*.OVL" \) -exec cp {} release/wrappers/ \; 2>/dev/null || true
+          find wrappers/mesa/build -type f \( -name "*.dll" -o -name "*.DLL" -o -name "*.exe" -o -name "*.EXE" \) -exec cp {} release/wrappers/ \; 2>/dev/null || true
+          ls -laR release/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-3dfx-windows-i386
+          path: release/
+          retention-days: 90
