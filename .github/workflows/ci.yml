@@ -87,7 +87,7 @@ jobs:
 
       - name: Collect artifacts
         run: |
-          mkdir -p release/qemu/share/qemu
+          mkdir -p release/qemu
           mkdir -p release/wrappers
           # QEMU executables
           cp build/qemu-system-i386.exe release/qemu/ 2>/dev/null || true
@@ -100,9 +100,9 @@ jobs:
                    vgabios.bin vgabios-cirrus.bin vgabios-stdvga.bin vgabios-vmware.bin vgabios-qxl.bin vgabios-virtio.bin vgabios-bochs-display.bin vgabios-ramfb.bin vgabios-ati.bin \
                    efi-e1000.rom efi-e1000e.rom efi-virtio.rom efi-pcnet.rom efi-rtl8139.rom efi-ne2k_pci.rom efi-vmxnet3.rom \
                    pvh.bin; do
-            cp "qemu-9.2.2/pc-bios/$f" release/qemu/share/qemu/ 2>/dev/null || true
+            cp "qemu-9.2.2/pc-bios/$f" release/qemu/ 2>/dev/null || true
           done
-          cp build/pc-bios/optionrom/*.bin release/qemu/share/qemu/ 2>/dev/null || true
+          cp build/pc-bios/optionrom/*.bin release/qemu/ 2>/dev/null || true
           # Guest wrappers
           find wrappers/3dfx/build -type f \( -name "*.dll" -o -name "*.DLL" -o -name "*.vxd" -o -name "*.VXD" -o -name "*.sys" -o -name "*.SYS" -o -name "*.exe" -o -name "*.EXE" -o -name "*.ovl" -o -name "*.OVL" \) -exec cp {} release/wrappers/ \; 2>/dev/null || true
           find wrappers/mesa/build -type f \( -name "*.dll" -o -name "*.DLL" -o -name "*.exe" -o -name "*.EXE" \) -exec cp {} release/wrappers/ \; 2>/dev/null || true
