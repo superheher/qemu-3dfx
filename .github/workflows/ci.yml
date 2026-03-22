@@ -65,6 +65,8 @@ jobs:
           test -f qemu-system-i386.exe || test -f qemu-system-i386w.exe
 
       - name: Build guest wrappers (3dfx)
+        env:
+          MSYSTEM: MINGW32
         run: |
           cd wrappers/3dfx
           mkdir build && cd build
@@ -72,6 +74,8 @@ jobs:
           make && make clean
 
       - name: Build guest wrappers (mesa)
+        env:
+          MSYSTEM: MINGW32
         run: |
           cd wrappers/mesa
           mkdir build && cd build
