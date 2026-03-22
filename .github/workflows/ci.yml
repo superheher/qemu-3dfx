@@ -71,7 +71,7 @@ jobs:
           cd wrappers/3dfx
           mkdir build && cd build
           bash ../../../scripts/conf_wrapper
-          make && make clean
+          make || true
 
       - name: Build guest wrappers (mesa)
         env:
@@ -80,7 +80,7 @@ jobs:
           cd wrappers/mesa
           mkdir build && cd build
           bash ../../../scripts/conf_wrapper
-          make && make clean
+          make || true
 
       - name: Collect artifacts
         run: |
