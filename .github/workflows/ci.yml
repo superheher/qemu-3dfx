@@ -5,6 +5,9 @@ on:
     branches: [master]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-qemu:
     runs-on: windows-latest
@@ -84,24 +87,22 @@ jobs:
 
       - name: Collect artifacts
         run: |
-          mkdir -p release/qemu
+          mkdir -p release/qemu/share/qemu
           mkdir -p release/wrappers
-          mkdir -p release/share/qemu
           # QEMU executables
           cp build/qemu-system-i386.exe release/qemu/ 2>/dev/null || true
           cp build/qemu-system-i386w.exe release/qemu/ 2>/dev/null || true
           cp build/qemu-img.exe release/qemu/ 2>/dev/null || true
           # Copy required DLLs from MSYS2
           ldd build/qemu-system-i386.exe 2>/dev/null | grep mingw | awk '{print $3}' | while read dll; do cp "$dll" release/qemu/; done || true
-          # Copy pc-bios firmware files needed for i386
+          # Copy pc-bios firmware files into share/qemu/ next to exe
           for f in bios.bin bios-256k.bin kvmvapic.bin linuxboot.bin linuxboot_dma.bin multiboot.bin multiboot_dma.bin \
                    vgabios.bin vgabios-cirrus.bin vgabios-stdvga.bin vgabios-vmware.bin vgabios-qxl.bin vgabios-virtio.bin vgabios-bochs-display.bin vgabios-ramfb.bin vgabios-ati.bin \
                    efi-e1000.rom efi-e1000e.rom efi-virtio.rom efi-pcnet.rom efi-rtl8139.rom efi-ne2k_pci.rom efi-vmxnet3.rom \
                    pvh.bin; do
-            cp "qemu-9.2.2/pc-bios/$f" release/share/qemu/ 2>/dev/null || true
+            cp "qemu-9.2.2/pc-bios/$f" release/qemu/share/qemu/ 2>/dev/null || true
           done
-          # Also copy any firmware from build output
-          cp build/pc-bios/optionrom/*.bin release/share/qemu/ 2>/dev/null || true
+          cp build/pc-bios/optionrom/*.bin release/qemu/share/qemu/ 2>/dev/null || true
           # Guest wrappers
           find wrappers/3dfx/build -type f \( -name "*.dll" -o -name "*.DLL" -o -name "*.vxd" -o -name "*.VXD" -o -name "*.sys" -o -name "*.SYS" -o -name "*.exe" -o -name "*.EXE" -o -name "*.ovl" -o -name "*.OVL" \) -exec cp {} release/wrappers/ \; 2>/dev/null || true
           find wrappers/mesa/build -type f \( -name "*.dll" -o -name "*.DLL" -o -name "*.exe" -o -name "*.EXE" \) -exec cp {} release/wrappers/ \; 2>/dev/null || true
@@ -113,3 +114,27 @@ jobs:
           name: qemu-3dfx-windows-x86_64
           path: release/
           retention-days: 90
+
+      - name: Create zip for release
+        shell: pwsh
+        run: |
+          Compress-Archive -Path release/* -DestinationPath qemu-3dfx-windows-x86_64.zip
+
+      - name: Create or update release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: "QEMU 9.2.2 with 3Dfx/Mesa pass-through (Windows x86_64)"
+          body: |
+            QEMU 9.2.2 patched with 3Dfx Glide and MESA GL pass-through.
+
+            **Contents:**
+            - `qemu/` — qemu-system-i386.exe, qemu-system-i386w.exe (windowed), qemu-img.exe + required DLLs + firmware
+            - `qemu/share/qemu/` — BIOS and firmware files (SeaBIOS, VGA BIOS, EFI ROMs)
+            - `wrappers/` — Guest OS wrappers (glide.dll, glide2x.dll, glide3x.dll, opengl32.dll, drivers)
+
+            Built from [kjliew/qemu-3dfx](https://github.com/kjliew/qemu-3dfx) upstream.
+          files: qemu-3dfx-windows-x86_64.zip
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
